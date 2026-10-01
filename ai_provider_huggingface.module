@@ -1,0 +1,87 @@
+<?php
+
+/**
+ * @file
+ * Hugging Face provider for AI core.
+ */
+
+/**
+ * Implements hook_autoload_info().
+ */
+function ai_provider_huggingface_autoload_info() {
+  return [
+    'AIHuggingFaceAdapter' => 'includes/AIHuggingFaceAdapter.php',
+  ];
+}
+
+/**
+ * Implements hook_ai_provider_info().
+ */
+function ai_provider_huggingface_ai_provider_info() {
+  return [
+    'huggingface' => [
+      'label' => t('Hugging Face'),
+      'description' => t('Hugging Face Serverless Inference Router and Dedicated Endpoints for open-source LLMs and embedding models.'),
+      'class' => 'AIHuggingFaceAdapter',
+      'website' => 'https://huggingface.co/',
+      'key_url' => 'https://huggingface.co/settings/tokens',
+      'models_url' => 'https://huggingface.co/models',
+    ],
+  ];
+}
+
+/**
+ * Implements hook_config_info().
+ */
+function ai_provider_huggingface_config_info() {
+  return [
+    'ai_provider_huggingface.settings' => [
+      'label' => t('Hugging Face Settings'),
+      'group' => t('Configuration'),
+    ],
+  ];
+}
+
+/**
+ * Implements hook_ai_provider_settings_alter().
+ */
+function ai_provider_huggingface_ai_provider_settings_alter(&$settings, $context) {
+  if ($context['provider'] !== 'huggingface') {
+    return;
+  }
+
+  $config = config('ai_provider_huggingface.settings');
+
+  $settings['huggingface_base_url'] = [
+    '#type' => 'textfield',
+    '#title' => t('Base URL / Inference Endpoint'),
+    '#default_value' => $config->get('base_url') ?: 'https://router.huggingface.co/v1',
+    '#description' => t('Hugging Face Inference Router URL (e.g. <code>https://router.huggingface.co/v1</code>) or your Dedicated Inference Endpoint URL (e.g. <code>https://xxxx.endpoints.huggingface.cloud/v1</code>).'),
+  ];
+
+  $settings['huggingface_custom_models'] = [
+    '#type' => 'textarea',
+    '#title' => t('Custom / Additional Models'),
+    '#default_value' => $config->get('custom_models') ?: '',
+    '#description' => t('Enter one model identifier per line (e.g., <code>meta-llama/Llama-3.3-70B-Instruct</code> or <code>alias=model_id</code>). These will be appended to the standard models list.'),
+    '#rows' => 4,
+  ];
+
+  $context['form']['#submit'][] = 'ai_provider_huggingface_settings_submit';
+}
+
+/**
+ * Submit handler for Hugging Face provider settings.
+ */
+function ai_provider_huggingface_settings_submit($form, &$form_state) {
+  $config = config('ai_provider_huggingface.settings');
+
+  if (isset($form_state['values']['huggingface_base_url'])) {
+    $config->set('base_url', trim($form_state['values']['huggingface_base_url']));
+  }
+  if (isset($form_state['values']['huggingface_custom_models'])) {
+    $config->set('custom_models', trim($form_state['values']['huggingface_custom_models']));
+  }
+
+  $config->save();
+}

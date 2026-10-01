@@ -1,0 +1,5 @@
+{
+  "_config_name": "ai_provider_huggingface.settings",
+  "base_url": "https://router.huggingface.co/v1",
+  "custom_models": ""
+}

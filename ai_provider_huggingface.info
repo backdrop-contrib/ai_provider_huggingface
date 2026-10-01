@@ -1,0 +1,8 @@
+name = AI Provider Hugging Face
+description = Hugging Face Serverless and Dedicated Inference provider for open-source models and embeddings.
+backdrop = 1.x
+type = module
+php = 8.0
+package = AI
+dependencies[] = ai
+dependencies[] = key
