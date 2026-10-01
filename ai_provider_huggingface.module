@@ -74,13 +74,16 @@ function ai_provider_huggingface_ai_provider_settings_alter(&$settings, $context
  * Submit handler for Hugging Face provider settings.
  */
 function ai_provider_huggingface_settings_submit($form, &$form_state) {
+  // The providers form uses #tree, so these values sit under the provider's
+  // settings container, not at the top level.
+  $values = $form_state['values']['providers']['huggingface_settings'] ?? [];
   $config = config('ai_provider_huggingface.settings');
 
-  if (isset($form_state['values']['huggingface_base_url'])) {
-    $config->set('base_url', trim($form_state['values']['huggingface_base_url']));
+  if (isset($values['huggingface_base_url'])) {
+    $config->set('base_url', trim($values['huggingface_base_url']));
   }
-  if (isset($form_state['values']['huggingface_custom_models'])) {
-    $config->set('custom_models', trim($form_state['values']['huggingface_custom_models']));
+  if (isset($values['huggingface_custom_models'])) {
+    $config->set('custom_models', trim($values['huggingface_custom_models']));
   }
 
   $config->save();

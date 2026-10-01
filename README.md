@@ -12,16 +12,19 @@ Router or a Dedicated Inference Endpoint.
 |---|---|---|
 | Chat | Yes | Streaming supported. JSON mode and JSON schema responses supported. |
 | Completions | Yes | Sent as a single chat message; uses the chat endpoint. |
-| Tool calling | Yes | Llama 3, Mistral and Qwen models. |
-| Thinking | Yes | R1 / reasoning models. |
-| Embeddings | Yes | Models whose ID contains `embed`, `bge` or `sentence`. |
-| Vision | No | |
+| Tool calling | Yes | Models the router catalog marks `supports_tools` on a live provider. |
+| Thinking | Manual | The catalog has no reasoning flag; assign models on the Model capabilities page. |
+| Embeddings | Yes | Router: the `hf-inference` feature-extraction pipeline. Dedicated endpoints: `/v1/embeddings`. |
+| Vision | Yes | Models the router catalog lists with image input. |
 | Image generation | No | |
 | Moderation | No | |
 | Speech-to-text | No | |
 
-Capabilities are inferred from the model ID, so the same rules apply to
-models you add yourself.
+Nothing is hardcoded. Chat models and their tool/vision flags come from the
+router catalog (`/v1/models`, which is public). Embedding models are the
+most-downloaded `feature-extraction` models that `hf-inference` serves, from the
+Hub API. Custom models are offered for chat and embeddings. Adjust any of this
+on the Model capabilities page.
 
 ## Settings
 
@@ -31,7 +34,7 @@ The provider settings at `admin/config/ai/settings` add:
   `https://router.huggingface.co/v1`. Set it to a Dedicated Endpoint URL
   (`https://xxxx.endpoints.huggingface.cloud/v1`) to use your own deployment.
 - **Custom / Additional Models** — one model ID per line (or `alias=model_id`),
-  appended to the built-in list of popular chat and embedding models.
+  added to the models discovered from the catalog.
 
 ## Installation
 

@@ -19,6 +19,13 @@ class AIHuggingFaceAdapter extends AIAdapterBase {
   protected $models = NULL;
 
   /**
+   * Capability flags per model ID, from the catalog or the custom list.
+   *
+   * @var array
+   */
+  protected $modelInfo = [];
+
+  /**
    * {@inheritdoc}
    */
   public function __construct($api_key, ?AIApi $api = NULL) {
@@ -60,6 +67,17 @@ class AIHuggingFaceAdapter extends AIAdapterBase {
   }
 
   /**
+   * Whether requests go to the shared Inference Providers router.
+   *
+   * The router serves chat through /v1 but has no /v1/embeddings route;
+   * embeddings use its hf-inference feature-extraction pipeline instead.
+   * Dedicated Inference Endpoints (TGI/TEI) serve both under their own /v1.
+   */
+  protected function usesRouter(): bool {
+    return parse_url($this->baseUrl, PHP_URL_HOST) === 'router.huggingface.co';
+  }
+
+  /**
    * {@inheritdoc}
    */
   public function getModels(): array {
@@ -67,22 +85,64 @@ class AIHuggingFaceAdapter extends AIAdapterBase {
       return $this->models;
     }
 
-    $models = [
-      'meta-llama/Llama-3.3-70B-Instruct' => 'Meta Llama 3.3 70B Instruct',
-      'meta-llama/Llama-3.1-8B-Instruct' => 'Meta Llama 3.1 8B Instruct',
-      'mistralai/Mistral-7B-Instruct-v0.3' => 'Mistral 7B Instruct v0.3',
-      'Qwen/Qwen2.5-72B-Instruct' => 'Qwen 2.5 72B Instruct',
-      'deepseek-ai/DeepSeek-R1' => 'DeepSeek R1 (via Hugging Face)',
-      'microsoft/Phi-3.5-mini-instruct' => 'Microsoft Phi-3.5 Mini',
-      'BAAI/bge-large-en-v1.5' => 'BAAI BGE Large EN v1.5 (Embeddings)',
-      'sentence-transformers/all-MiniLM-L6-v2' => 'Sentence Transformers MiniLM-L6-v2 (Embeddings)',
-      'mixedbread-ai/mxbai-embed-large' => 'MixedBread AI Embed Large (Embeddings)',
-    ];
-
-    if (!empty($this->customModels)) {
-      foreach ($this->customModels as $alias => $id) {
-        $models[$id] = ($alias !== $id) ? ($alias . ' (' . $id . ')') : $id;
+    // No built-in list: the router catalog changes as providers add and drop
+    // models, so models come from the live catalog plus the custom list.
+    $models = [];
+    try {
+      $result = $this->makeRequest($this->baseUrl . '/models', [], [], 'GET', 15);
+      foreach ($result['data'] ?? [] as $model) {
+        $id = $model['id'] ?? NULL;
+        if (empty($id)) {
+          continue;
+        }
+        $models[$id] = $id;
+        $supports_tools = FALSE;
+        foreach ($model['providers'] ?? [] as $provider) {
+          if (!empty($provider['supports_tools']) && ($provider['status'] ?? 'live') === 'live') {
+            $supports_tools = TRUE;
+            break;
+          }
+        }
+        $this->modelInfo[$id] = [
+          'text' => TRUE,
+          'tool_calling' => $supports_tools,
+          'vision' => in_array('image', $model['architecture']['input_modalities'] ?? [], TRUE),
+        ];
       }
+    }
+    catch (\Exception $e) {
+      watchdog('ai_provider_huggingface', 'Failed to fetch Hugging Face models: @message', ['@message' => $e->getMessage()], WATCHDOG_WARNING);
+    }
+
+    if ($this->usesRouter()) {
+      // The router catalog lists chat models only. Embedding models are the
+      // most-downloaded feature-extraction models hf-inference serves.
+      try {
+        $query = http_build_query([
+          'inference_provider' => 'hf-inference',
+          'pipeline_tag' => 'feature-extraction',
+          'sort' => 'downloads',
+          'limit' => 50,
+        ]);
+        $result = $this->makeRequest('https://huggingface.co/api/models?' . $query, [], [], 'GET', 15);
+        foreach ($result as $model) {
+          $id = is_array($model) ? ($model['id'] ?? NULL) : NULL;
+          if (!empty($id) && !isset($models[$id])) {
+            $models[$id] = $id;
+            $this->modelInfo[$id] = ['embeddings' => TRUE];
+          }
+        }
+      }
+      catch (\Exception $e) {
+        watchdog('ai_provider_huggingface', 'Failed to fetch Hugging Face embedding models: @message', ['@message' => $e->getMessage()], WATCHDOG_WARNING);
+      }
+    }
+
+    // Custom models carry no metadata; offer them for chat and embeddings and
+    // let the Model capabilities page refine that.
+    foreach ($this->customModels as $alias => $id) {
+      $models[$id] = ($alias !== $id) ? ($alias . ' (' . $id . ')') : $id;
+      $this->modelInfo[$id] = ($this->modelInfo[$id] ?? []) + ['text' => TRUE, 'embeddings' => TRUE];
     }
 
     asort($models);
@@ -98,35 +158,7 @@ class AIHuggingFaceAdapter extends AIAdapterBase {
     $filtered = [];
 
     foreach ($models as $id => $label) {
-      $ok = FALSE;
-      switch ($capability) {
-        case 'text':
-        case 'chat':
-          $ok = !preg_match('/embed|bge|sentence/i', $id);
-          break;
-
-        case 'thinking':
-          $ok = (bool) preg_match('/r1|reason/i', $id);
-          break;
-
-        case 'tool_calling':
-          $ok = (bool) preg_match('/llama-3|mistral|qwen/i', $id);
-          break;
-
-        case 'embeddings':
-        case 'embedding':
-          $ok = (bool) preg_match('/embed|bge|sentence/i', $id);
-          break;
-
-        case 'vision':
-        case 'image':
-        case 'moderation':
-        case 'stt':
-          $ok = FALSE;
-          break;
-      }
-
-      if ($ok) {
+      if (!empty($this->modelInfo[$id][$capability])) {
         $filtered[$id] = $label;
       }
     }
@@ -230,15 +262,29 @@ class AIHuggingFaceAdapter extends AIAdapterBase {
    * {@inheritdoc}
    */
   public function embedding(string $input, string $model, bool $log = TRUE): array {
-    $url = $this->baseUrl . '/embeddings';
-    $payload = [
-      'model' => $model,
-      'input' => $input,
-    ];
+    if ($this->usesRouter()) {
+      $url = 'https://router.huggingface.co/hf-inference/models/' . str_replace('%2F', '/', rawurlencode($model)) . '/pipeline/feature-extraction';
+      $payload = ['inputs' => $input];
+    }
+    else {
+      $url = $this->baseUrl . '/embeddings';
+      $payload = ['model' => $model, 'input' => $input];
+    }
 
     try {
       $result = $this->makeRequest($url, $payload, [], 'POST', 60);
-      return $result['data'][0]['embedding'] ?? [];
+      if (isset($result['data'][0]['embedding'])) {
+        return $result['data'][0]['embedding'];
+      }
+      // feature-extraction returns the bare vector, or [[vector]] for some
+      // models.
+      if (isset($result[0]) && is_array($result[0])) {
+        $result = $result[0];
+      }
+      if (isset($result[0]) && is_numeric($result[0])) {
+        return array_map('floatval', $result);
+      }
+      throw new \RuntimeException('Hugging Face returned no embedding vector for ' . $model . '.');
     }
     catch (\Exception $e) {
       watchdog('ai_provider_huggingface', 'Hugging Face embedding error: @message', ['@message' => $e->getMessage()], WATCHDOG_ERROR);
